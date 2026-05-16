@@ -1,0 +1,259 @@
+Attribute VB_Name = "ModFindParents"
+'================================================================
+' MACRO : FindAllParents
+' VERSION: 1
+'
+' PURPOSE:
+'   - Active document must be a CATProduct
+'   - Recursively traverse the entire product tree
+'   - For every Part (leaf node) found, record the full
+'     parent chain from root down to the part
+'   - Show results in a UserForm with a scrollable ListBox
+'   - Export to Desktop txt file with format:
+'     Parent1, Parent2, Parent3, ..., Part
+'
+' SETUP:
+'   1. CATIA > Tools > Macros > Visual Basic Editor (Alt+F11)
+'   --- MODULE ---
+'   2. Insert > Module, name it ModFindParents
+'   3. Paste the MODULE CODE section into it
+'   --- USERFORM ---
+'   4. Insert > UserForm, name it FrmParents
+'   5. Add controls listed in USERFORM SETUP section
+'   6. Paste USERFORM CODE into the form code window
+'   7. Open a CATProduct and run FindAllParents
+'================================================================
+
+Option Explicit
+
+'================================================================
+' GLOBALS - shared with UserForm
+'================================================================
+Public gDoc        As Document
+Public gPartCount  As Long
+Public gPaths()    As String
+
+'================================================================
+' ENTRY POINT
+'================================================================
+Sub FindAllParents()
+
+    '------------------------------------------------------------
+    ' VARIABLE DECLARATIONS - all at the top
+    '------------------------------------------------------------
+    Dim oProduct    As Product
+
+    '------------------------------------------------------------
+    ' STEP 1 - Validate document is a CATProduct
+    '------------------------------------------------------------
+    If CATIA.Documents.Count = 0 Then
+        MsgBox "No document is open.", vbExclamation, "Macro"
+        Exit Sub
+    End If
+
+    Set gDoc = CATIA.ActiveDocument
+
+    If InStr(LCase(gDoc.Name), ".catproduct") = 0 Then
+        MsgBox "Please open a CATProduct first.", vbExclamation, "Macro"
+        Exit Sub
+    End If
+
+    '------------------------------------------------------------
+    ' STEP 2 - Initialise global results
+    '------------------------------------------------------------
+    gPartCount = 0
+    ReDim gPaths(0)
+
+    '------------------------------------------------------------
+    ' STEP 3 - Get root product and start recursive traversal
+    '------------------------------------------------------------
+    Set oProduct = gDoc.Product
+
+    '-- Start recursion with empty parent path ------------------
+    Call TraverseProduct(oProduct, "")
+
+    '------------------------------------------------------------
+    ' STEP 4 - Report results
+    '------------------------------------------------------------
+    If gPartCount = 0 Then
+        MsgBox "No parts found in the product structure.", _
+               vbInformation, "FindAllParents"
+        Exit Sub
+    End If
+
+    '------------------------------------------------------------
+    ' STEP 5 - Show UserForm
+    '------------------------------------------------------------
+    FrmParents.Show vbModeless
+
+End Sub
+
+
+'================================================================
+' TraverseProduct - recursive function to walk the product tree
+'================================================================
+Sub TraverseProduct(oProduct As Product, sParentPath As String)
+
+    '------------------------------------------------------------
+    ' VARIABLE DECLARATIONS - all at the top
+    '------------------------------------------------------------
+    Dim i           As Integer
+    Dim oChild      As Product
+    Dim sThisName   As String
+    Dim sThisPath   As String
+    Dim nChildren   As Integer
+
+    '-- Get this product's name ---------------------------------
+    On Error Resume Next
+    sThisName = oProduct.PartNumber
+    If sThisName = "" Then sThisName = oProduct.Name
+    On Error GoTo 0
+
+    '-- Build the path to this node -----------------------------
+    If sParentPath = "" Then
+        sThisPath = sThisName
+    Else
+        sThisPath = sParentPath & ", " & sThisName
+    End If
+
+    '-- Check if this is a leaf (Part) or a node (Assembly) -----
+    On Error Resume Next
+    nChildren = oProduct.Products.Count
+    On Error GoTo 0
+
+    If nChildren = 0 Then
+
+        '-- This is a Part (leaf node) --------------------------
+        '-- Skip the root product itself if it has no children --
+        If sParentPath <> "" Then
+            ReDim Preserve gPaths(gPartCount)
+            gPaths(gPartCount) = sThisPath
+            gPartCount = gPartCount + 1
+        End If
+
+    Else
+
+        '-- This is an Assembly node - recurse into children ----
+        For i = 1 To nChildren
+            On Error Resume Next
+            Set oChild = oProduct.Products.Item(i)
+            On Error GoTo 0
+            If Not oChild Is Nothing Then
+                Call TraverseProduct(oChild, sThisPath)
+            End If
+        Next i
+
+    End If
+
+End Sub
+
+
+'================================================================
+' BuildReport - builds the full export text
+'================================================================
+Function BuildReport() As String
+
+    Dim i       As Long
+    Dim sReport As String
+
+    sReport = "FIND ALL PARENTS REPORT" & vbCrLf
+    sReport = sReport & "Product: " & CATIA.ActiveDocument.Name & vbCrLf
+    sReport = sReport & "Total parts found: " & gPartCount & vbCrLf
+    sReport = sReport & "=======================================" & vbCrLf & vbCrLf
+    sReport = sReport & "Format: Parent1, Parent2, ..., Part" & vbCrLf & vbCrLf
+
+    For i = 0 To gPartCount - 1
+        sReport = sReport & gPaths(i) & vbCrLf
+    Next i
+
+    sReport = sReport & vbCrLf
+    sReport = sReport & "=======================================" & vbCrLf
+    sReport = sReport & "TOTAL PARTS: " & gPartCount & vbCrLf
+
+    BuildReport = sReport
+
+End Function
+
+
+'################################################################
+' USERFORM SETUP
+' Create a UserForm named: FrmParents
+'
+' Controls:
+'   Control         Name          Key settings
+'   -------------------------------------------------------
+'   Label           lblTitle      Bold=True, wide at top
+'   Label           lblCount      below title, shows format info
+'   TextBox         txtParts      Width=500, Height=300
+'                                 MultiLine=True
+'                                 ScrollBars=3 (both H and V)
+'                                 WordWrap=False
+'                                 Font=Courier New, Size=8
+'   CommandButton   btnCopy       Caption="Copy to clipboard"
+'   CommandButton   btnExport     Caption="Export to .txt"
+'   CommandButton   btnClose      Caption="Close"
+'
+' Paste USERFORM CODE below into the FrmParents code window
+' (double-click the form to open it, remove leading ')
+'################################################################
+
+'Private Sub UserForm_Initialize()
+'
+'    Dim i       As Long
+'    Dim sAll    As String
+'
+'    Me.Caption = "FindAllParents — " & CATIA.ActiveDocument.Name
+'
+'    Me.lblTitle.Caption = "Product: " & CATIA.ActiveDocument.Name & _
+'                          "   |   Parts found: " & gPartCount
+'
+'    Me.lblCount.Caption = "Format: Parent1, Parent2, ..., Part"
+'
+'    '-- Build full text with one path per line ------------------
+'    sAll = ""
+'    For i = 0 To gPartCount - 1
+'        sAll = sAll & gPaths(i) & vbCrLf
+'    Next i
+'
+'    Me.txtParts.Text = sAll
+'
+'End Sub
+'
+'
+'Private Sub btnCopy_Click()
+'
+'    Me.txtParts.SetFocus
+'    Me.txtParts.SelStart  = 0
+'    Me.txtParts.SelLength = Len(Me.txtParts.Text)
+'    Me.txtParts.Copy
+'    MsgBox "Report copied to clipboard!", vbInformation, "Copied"
+'
+'End Sub
+'
+'
+'Private Sub btnExport_Click()
+'
+'    Dim sReport   As String
+'    Dim sDesktop  As String
+'    Dim sFilePath As String
+'    Dim iFile     As Integer
+'
+'    sReport   = BuildReport()
+'    sDesktop  = Environ("USERPROFILE") & "\Desktop\"
+'    sFilePath = sDesktop & "FindAllParents.txt"
+'    iFile     = FreeFile
+'
+'    Open sFilePath For Output As #iFile
+'    Print #iFile, sReport
+'    Close #iFile
+'
+'    MsgBox "Report saved to:" & vbCrLf & sFilePath, _
+'           vbInformation, "Exported"
+'
+'End Sub
+'
+'
+'Private Sub btnClose_Click()
+'    Unload Me
+'End Sub
+
