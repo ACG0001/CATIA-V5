@@ -1,0 +1,561 @@
+'================================================================
+' MACRO : ColourAllFilletsByRadius
+' VERSION: 11
+'
+' PURPOSE:
+'   - Scan ALL EdgeFillet features in the active CATPart
+'   - Group them by radius value
+'   - Assign a unique colour to each radius group
+'   - Apply colour in CATIA via Selection.VisProperties
+'   - Show a MsgBox summary per radius group
+'   - Show a UserForm with graphical colour legend
+'   - Save full report to Desktop txt file
+'   - Allow copy of report to clipboard
+'
+' SETUP:
+'   1. CATIA > Tools > Macros > Visual Basic Editor (Alt+F11)
+'   --- MODULE ---
+'   2. Insert > Module, name it ModFillets11
+'   3. Paste the MODULE CODE section below into it
+'   --- USERFORM ---
+'   4. Insert > UserForm, name it FrmLegend
+'   5. Add controls listed in Section USERFORM SETUP
+'   6. Paste USERFORM CODE into the form code window
+'   7. Run ColourAllFilletsByRadius from Tools > Macros
+'================================================================
+
+Option Explicit
+
+'================================================================
+' GLOBALS - shared with UserForm
+'================================================================
+Public gDoc         As Document
+Public gPart        As Part
+Public gCount       As Long
+Public gGroupCount  As Long
+
+Public gNames()     As String
+Public gRadii()     As Double
+Public gShapes()    As AnyObject
+Public gColorIdx()  As Integer
+
+Public gGroupRadii()    As Double
+Public gGroupCounts()   As Long
+Public gGroupColorIdx() As Integer
+
+Public gColorNames(15)  As String
+Public gColorsR(15)     As Long
+Public gColorsG(15)     As Long
+Public gColorsB(15)     As Long
+
+'================================================================
+' ENTRY POINT
+'================================================================
+Sub ColourAllFilletsByRadius()
+
+    '------------------------------------------------------------
+    ' VARIABLE DECLARATIONS - all at the top
+    '------------------------------------------------------------
+    Dim oBodies     As Bodies
+    Dim oBody       As Body
+    Dim oShapes     As Shapes
+    Dim oShape      As AnyObject
+    Dim oVP         As VisPropertySet
+    Dim iBody       As Integer
+    Dim iShape      As Integer
+    Dim sType       As String
+    Dim dRadius     As Double
+    Dim dRnd        As Double
+    Dim k           As Long
+    Dim l           As Long
+    Dim m           As Long
+    Dim tempName    As String
+    Dim tempRad     As Double
+    Dim tempIdx     As Integer
+    Dim tempShape   As AnyObject
+    Dim curRad      As Double
+    Dim colorIdx    As Integer
+    Dim grp         As Long
+    Dim iConfirm    As Integer
+    Dim iBodyR      As Long
+    Dim iBodyG      As Long
+    Dim iBodyB      As Long
+    Dim oBodyVP     As VisPropertySet
+    Dim nSafetyCount As Integer
+    Dim sMsg        As String
+    Dim sTitle      As String
+
+    '------------------------------------------------------------
+    ' STEP 1 - Validate document
+    '------------------------------------------------------------
+    If CATIA.Documents.Count = 0 Then
+        MsgBox "No document is open.", vbExclamation, "Macro"
+        Exit Sub
+    End If
+
+    Set gDoc = CATIA.ActiveDocument
+
+    If InStr(LCase(gDoc.Name), ".catpart") = 0 Then
+        MsgBox "Please open a CATPart first.", vbExclamation, "Macro"
+        Exit Sub
+    End If
+
+    Set gPart = gDoc.Part
+
+    '------------------------------------------------------------
+    ' STEP 2 - Initialise colour palette (16 distinct colours)
+    '------------------------------------------------------------
+    gColorNames(0)  = "Red"          : gColorsR(0)  = 255 : gColorsG(0)  = 0   : gColorsB(0)  = 0
+    gColorNames(1)  = "Green"        : gColorsR(1)  = 0   : gColorsG(1)  = 180 : gColorsB(1)  = 0
+    gColorNames(2)  = "Blue"         : gColorsR(2)  = 0   : gColorsG(2)  = 100 : gColorsB(2)  = 255
+    gColorNames(3)  = "Orange"       : gColorsR(3)  = 255 : gColorsG(3)  = 140 : gColorsB(3)  = 0
+    gColorNames(4)  = "Purple"       : gColorsR(4)  = 160 : gColorsG(4)  = 0   : gColorsB(4)  = 200
+    gColorNames(5)  = "Cyan"         : gColorsR(5)  = 0   : gColorsG(5)  = 200 : gColorsB(5)  = 200
+    gColorNames(6)  = "Pink"         : gColorsR(6)  = 255 : gColorsG(6)  = 0   : gColorsB(6)  = 180
+    gColorNames(7)  = "Yellow"       : gColorsR(7)  = 255 : gColorsG(7)  = 255 : gColorsB(7)  = 0
+    gColorNames(8)  = "Brown"        : gColorsR(8)  = 160 : gColorsG(8)  = 80  : gColorsB(8)  = 0
+    gColorNames(9)  = "Lime"         : gColorsR(9)  = 100 : gColorsG(9)  = 255 : gColorsB(9)  = 0
+    gColorNames(10) = "Navy"         : gColorsR(10) = 0   : gColorsG(10) = 0   : gColorsB(10) = 160
+    gColorNames(11) = "Coral"        : gColorsR(11) = 255 : gColorsG(11) = 100 : gColorsB(11) = 80
+    gColorNames(12) = "Teal"         : gColorsR(12) = 0   : gColorsG(12) = 160 : gColorsB(12) = 140
+    gColorNames(13) = "Magenta"      : gColorsR(13) = 200 : gColorsG(13) = 0   : gColorsB(13) = 200
+    gColorNames(14) = "Gold"         : gColorsR(14) = 220 : gColorsG(14) = 180 : gColorsB(14) = 0
+    gColorNames(15) = "White"        : gColorsR(15) = 255 : gColorsG(15) = 255 : gColorsB(15) = 255
+
+    '------------------------------------------------------------
+    ' STEP 3 - Clear selection and initialise arrays
+    '------------------------------------------------------------
+    gDoc.Selection.Clear
+    gCount = 0
+    ReDim gNames(0)
+    ReDim gRadii(0)
+    ReDim gShapes(0)
+    ReDim gColorIdx(0)
+
+    '------------------------------------------------------------
+    ' STEP 4 - Scan ALL bodies and shapes for fillets
+    '------------------------------------------------------------
+    Set oBodies = gPart.Bodies
+
+    For iBody = 1 To oBodies.Count
+
+        Set oBody   = oBodies.Item(iBody)
+        Set oShapes = oBody.Shapes
+
+        For iShape = 1 To oShapes.Count
+
+            Set oShape = oShapes.Item(iShape)
+            sType      = LCase(TypeName(oShape))
+
+            '-- Match any fillet type ---------------------------
+            If InStr(sType, "edgefillet") > 0 Or _
+               InStr(sType, "fillet") > 0 Then
+
+                dRadius = ReadRadius(oShape, gPart)
+
+                If dRadius > 0 Then
+
+                    dRnd = CDbl(Format(dRadius, "0.000"))
+
+                    ReDim Preserve gNames(gCount)
+                    ReDim Preserve gRadii(gCount)
+                    ReDim Preserve gShapes(gCount)
+                    ReDim Preserve gColorIdx(gCount)
+                    gNames(gCount)      = oShape.Name
+                    gRadii(gCount)      = dRnd
+                    Set gShapes(gCount) = oShape
+                    gColorIdx(gCount)   = 0
+                    gCount = gCount + 1
+
+                End If
+            End If
+
+        Next iShape
+    Next iBody
+
+    '------------------------------------------------------------
+    ' STEP 5 - Exit if no fillets found
+    '------------------------------------------------------------
+    If gCount = 0 Then
+        MsgBox "No EdgeFillet features found in the part.", _
+               vbInformation, "Result"
+        Exit Sub
+    End If
+
+    '-- Confirm before proceeding with sort + colour ------------
+    iConfirm = MsgBox(gCount & " fillets found." & vbCrLf & vbCrLf & _
+                      "Click OK to sort and apply colours." & vbCrLf & _
+                      "Click Cancel to abort.", _
+                      vbOKCancel + vbInformation, "Fillets Found")
+    If iConfirm = vbCancel Then
+        MsgBox "Macro cancelled.", vbInformation, "Cancelled"
+        Exit Sub
+    End If
+
+    '------------------------------------------------------------
+    ' STEP 6 - Sort all fillets by radius ascending
+    '------------------------------------------------------------
+    For k = 0 To gCount - 2
+        For l = 0 To gCount - 2 - k
+            If gRadii(l) > gRadii(l + 1) Then
+                tempRad              = gRadii(l)
+                gRadii(l)            = gRadii(l + 1)
+                gRadii(l + 1)        = tempRad
+                tempName             = gNames(l)
+                gNames(l)            = gNames(l + 1)
+                gNames(l + 1)        = tempName
+                Set tempShape        = gShapes(l)
+                Set gShapes(l)       = gShapes(l + 1)
+                Set gShapes(l + 1)   = tempShape
+                tempIdx              = gColorIdx(l)
+                gColorIdx(l)         = gColorIdx(l + 1)
+                gColorIdx(l + 1)     = tempIdx
+            End If
+        Next l
+    Next k
+
+    '------------------------------------------------------------
+    ' STEP 7 - Assign unique colour per radius group
+    '          Skip the colour used by PartBody to avoid confusion
+    '------------------------------------------------------------
+    '-- Read PartBody colour ------------------------------------
+    iBodyR = -1 : iBodyG = -1 : iBodyB = -1
+
+    On Error Resume Next
+    gDoc.Selection.Clear
+    gDoc.Selection.Add gPart.Bodies.Item(1)
+    Set oBodyVP = gDoc.Selection.VisProperties
+    oBodyVP.GetRealColor iBodyR, iBodyG, iBodyB
+    gDoc.Selection.Clear
+    On Error GoTo 0
+
+    curRad   = -1
+    colorIdx = -1
+
+    For m = 0 To gCount - 1
+
+        If gRadii(m) <> curRad Then
+            curRad   = gRadii(m)
+            colorIdx = colorIdx + 1
+            If colorIdx > 15 Then colorIdx = 0
+            '-- Skip if this colour matches the PartBody colour --
+            nSafetyCount = 0
+            Do While colorIdx <= 15 And nSafetyCount < 16
+                If gColorsR(colorIdx) = iBodyR And _
+                   gColorsG(colorIdx) = iBodyG And _
+                   gColorsB(colorIdx) = iBodyB Then
+                    colorIdx = colorIdx + 1
+                    If colorIdx > 15 Then colorIdx = 0
+                    nSafetyCount = nSafetyCount + 1
+                Else
+                    Exit Do
+                End If
+            Loop
+        End If
+
+        gColorIdx(m) = colorIdx
+
+        gDoc.Selection.Clear
+        gDoc.Selection.Add gShapes(m)
+        Set oVP = gDoc.Selection.VisProperties
+        oVP.SetRealColor gColorsR(colorIdx), _
+                         gColorsG(colorIdx), _
+                         gColorsB(colorIdx), 1
+        gDoc.Selection.Clear
+
+    Next m
+
+    '------------------------------------------------------------
+    ' STEP 8 - Build group summary arrays for UserForm
+    '------------------------------------------------------------
+    gGroupCount = 0
+    curRad      = -1
+
+    For m = 0 To gCount - 1
+        If gRadii(m) <> curRad Then
+            gGroupCount = gGroupCount + 1
+            curRad      = gRadii(m)
+        End If
+    Next m
+
+    ReDim gGroupRadii(gGroupCount - 1)
+    ReDim gGroupCounts(gGroupCount - 1)
+    ReDim gGroupColorIdx(gGroupCount - 1)
+
+    grp    = -1
+    curRad = -1
+
+    For m = 0 To gCount - 1
+        If gRadii(m) <> curRad Then
+            grp                    = grp + 1
+            curRad                 = gRadii(m)
+            gGroupRadii(grp)       = gRadii(m)
+            gGroupCounts(grp)      = 0
+            gGroupColorIdx(grp)    = gColorIdx(m)
+        End If
+        gGroupCounts(grp) = gGroupCounts(grp) + 1
+    Next m
+
+    '------------------------------------------------------------
+    ' STEP 9 - Select all fillets in CATIA
+    '------------------------------------------------------------
+    gDoc.Selection.Clear
+    For m = 0 To gCount - 1
+        gDoc.Selection.Add gShapes(m)
+    Next m
+
+    '------------------------------------------------------------
+    ' STEP 10 - Update display
+    '------------------------------------------------------------
+    gPart.Update
+
+    '------------------------------------------------------------
+    ' STEP 11 - Show one MsgBox per radius group
+    '------------------------------------------------------------
+    For grp = 0 To gGroupCount - 1
+
+        sTitle = "Radius = " & Format(gGroupRadii(grp), "0.000") & " mm" & _
+                 "   |   Colour: " & gColorNames(gGroupColorIdx(grp)) & _
+                 "   |   Count: " & gGroupCounts(grp)
+
+        sMsg = "Colour: " & gColorNames(gGroupColorIdx(grp)) & vbCrLf & _
+               "Radius: " & Format(gGroupRadii(grp), "0.000") & " mm" & vbCrLf & _
+               "Fillets: " & gGroupCounts(grp) & vbCrLf & vbCrLf
+
+        '-- List fillet names in this group ---------------------
+        For m = 0 To gCount - 1
+            If gRadii(m) = gGroupRadii(grp) Then
+                sMsg = sMsg & "  " & gNames(m) & vbCrLf
+            End If
+        Next m
+
+        MsgBox sMsg, vbInformation, sTitle
+
+    Next grp
+
+    '------------------------------------------------------------
+    ' STEP 12 - Show UserForm with graphical legend (modeless)
+    '------------------------------------------------------------
+    FrmLegend.Show vbModeless
+
+End Sub
+
+
+'================================================================
+' ReadRadius : returns radius in mm, or -1 if not readable
+'             Tries direct cast FIRST (fast), parameters as fallback
+'================================================================
+Function ReadRadius(oShape As AnyObject, oPart As Part) As Double
+
+    Dim dRadius As Double
+    Dim oParam  As Parameter
+    Dim oFillet As EdgeFillet
+    Dim dVal    As Double
+    Dim j       As Integer
+
+    dRadius = -1
+
+    '-- Method 1: direct EdgeFillet cast (fast) -----------------
+    On Error Resume Next
+    Set oFillet = oShape
+    If Not oFillet Is Nothing Then
+        dVal = oFillet.Radius.Value
+        If Err.Number = 0 And dVal > 0 Then
+            ReadRadius = dVal
+            Exit Function
+        End If
+    End If
+    Err.Clear
+    On Error GoTo 0
+
+    '-- Method 2: search part parameters (slower, fallback only)
+    On Error Resume Next
+    For j = 1 To oPart.Parameters.Count
+        Set oParam = oPart.Parameters.Item(j)
+        If InStr(oParam.Name, oShape.Name) > 0 Then
+            If InStr(LCase(oParam.Name), "radius") > 0 Then
+                dRadius = oParam.Value
+                If dRadius > 0 Then
+                    ReadRadius = dRadius
+                    Exit Function
+                End If
+            End If
+        End If
+    Next j
+    On Error GoTo 0
+
+    ReadRadius = -1
+
+End Function
+
+
+'================================================================
+' BuildReport : builds the full text report
+'================================================================
+Function BuildReport() As String
+
+    Dim grp     As Long
+    Dim m       As Long
+    Dim sReport As String
+    Dim n       As Long
+    Dim sDocName As String
+
+    '-- Safely get document name --------------------------------
+    On Error Resume Next
+    sDocName = CATIA.ActiveDocument.Name
+    On Error GoTo 0
+    If sDocName = "" Then sDocName = "Unknown"
+
+    sReport = "FILLET COLOUR REPORT" & vbCrLf
+    sReport = sReport & "Part: " & sDocName & vbCrLf
+    sReport = sReport & "Total fillets: " & gCount & vbCrLf
+    sReport = sReport & "Radius groups: " & gGroupCount & vbCrLf
+    sReport = sReport & "=======================================" & vbCrLf & vbCrLf
+
+    For grp = 0 To gGroupCount - 1
+
+        sReport = sReport & "-- Radius = " & Format(gGroupRadii(grp), "0.000") & _
+                  " mm   [" & gColorNames(gGroupColorIdx(grp)) & "]" & _
+                  "   Count: " & gGroupCounts(grp) & " --" & vbCrLf
+
+        n = 0
+        For m = 0 To gCount - 1
+            If gRadii(m) = gGroupRadii(grp) Then
+                n = n + 1
+                sReport = sReport & "   " & n & ". " & gNames(m) & _
+                          "   [" & gColorNames(gColorIdx(m)) & "]" & vbCrLf
+            End If
+        Next m
+
+        sReport = sReport & vbCrLf
+
+    Next grp
+
+    sReport = sReport & "=======================================" & vbCrLf
+    sReport = sReport & "TOTAL fillets: " & gCount & vbCrLf
+
+    BuildReport = sReport
+
+End Function
+
+
+'################################################################
+' USERFORM CODE
+' --> Create a UserForm named FrmLegend
+'
+' Controls needed:
+'   lblTitle        Label           Bold=True, at top, wide
+'   fraLegend       Frame           Width=380, Height=240, ScrollBars=2 (vertical)
+'   lblSummary      Label           below frame, shows total count
+'   btnCopy         CommandButton   Caption="Copy to clipboard"
+'   btnExport       CommandButton   Caption="Export to .txt"
+'   btnClose        CommandButton   Caption="Close"
+'
+' Paste everything below (removing leading ') into the
+' FrmLegend code window (double-click the form to open it)
+'################################################################
+
+'Private Sub UserForm_Initialize()
+'
+'    Dim grp       As Long
+'    Dim oLbl      As MSForms.Label
+'    Dim oBox      As MSForms.Label
+'    Dim yPos      As Long
+'    Dim lR        As Long
+'    Dim lG        As Long
+'    Dim lB        As Long
+'
+'    Me.Caption = "Fillet Colour Legend — " & CATIA.ActiveDocument.Name
+'    Me.lblTitle.Caption = "Fillet groups by radius — Total fillets: " & gCount & _
+'                          "   |   Groups: " & gGroupCount
+'
+'    '-- Build one row per radius group inside fraLegend ---------
+'    yPos = 8
+'
+'    For grp = 0 To gGroupCount - 1
+'
+'        lR = gColorsR(gGroupColorIdx(grp))
+'        lG = gColorsG(gGroupColorIdx(grp))
+'        lB = gColorsB(gGroupColorIdx(grp))
+'
+'        '-- Coloured rectangle (Label with background colour) --
+'        Set oBox = fraLegend.Controls.Add("Forms.Label.1")
+'        With oBox
+'            .Left       = 6
+'            .Top        = yPos
+'            .Width      = 30
+'            .Height     = 18
+'            .BackColor  = RGB(lR, lG, lB)
+'            .BorderStyle = 1
+'            .Caption    = ""
+'        End With
+'
+'        '-- Text label with radius, colour name and count ------
+'        Set oLbl = fraLegend.Controls.Add("Forms.Label.1")
+'        With oLbl
+'            .Left    = 44
+'            .Top     = yPos + 1
+'            .Width   = 320
+'            .Height  = 16
+'            .Caption = Format(gGroupRadii(grp), "0.000") & " mm" & _
+'                       "   [" & gColorNames(gGroupColorIdx(grp)) & "]" & _
+'                       "   —   " & gGroupCounts(grp) & " fillet(s)"
+'            .Font.Size = 9
+'        End With
+'
+'        yPos = yPos + 24
+'
+'    Next grp
+'
+'    '-- Resize frame height to fit all rows --------------------
+'    If yPos + 10 > fraLegend.Height Then
+'        fraLegend.ScrollHeight = yPos + 10
+'    End If
+'
+'    Me.lblSummary.Caption = "Total: " & gCount & " fillet(s) in " & _
+'                            gGroupCount & " radius group(s)"
+'
+'End Sub
+'
+'
+'Private Sub btnCopy_Click()
+'    Dim sReport As String
+'    sReport = BuildReport()
+'    '-- Place TextBox off-screen (visible but not seen) ---------
+'    Dim oTxt As MSForms.TextBox
+'    Set oTxt = Me.Controls.Add("Forms.TextBox.1")
+'    oTxt.Visible    = True
+'    oTxt.MultiLine  = True
+'    oTxt.Left       = -500
+'    oTxt.Top        = -500
+'    oTxt.Width      = 100
+'    oTxt.Height     = 20
+'    oTxt.Text       = sReport
+'    oTxt.SetFocus
+'    oTxt.SelStart   = 0
+'    oTxt.SelLength  = Len(oTxt.Text)
+'    oTxt.Copy
+'    Me.Controls.Remove oTxt.Name
+'    MsgBox "Report copied to clipboard!", vbInformation, "Copied"
+'End Sub
+'
+'
+'Private Sub btnExport_Click()
+'    Dim sReport   As String
+'    Dim sDesktop  As String
+'    Dim sFilePath As String
+'    Dim iFile     As Integer
+'    sReport   = BuildReport()
+'    sDesktop  = Environ("USERPROFILE") & "\Desktop\"
+'    sFilePath = sDesktop & "FilletColourReport.txt"
+'    iFile     = FreeFile
+'    Open sFilePath For Output As #iFile
+'    Print #iFile, sReport
+'    Close #iFile
+'    MsgBox "Saved to: " & sFilePath, vbInformation, "Exported"
+'End Sub
+'
+'
+'Private Sub btnClose_Click()
+'    Unload Me
+'End Sub
